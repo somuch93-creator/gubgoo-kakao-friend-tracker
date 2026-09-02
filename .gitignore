@@ -1,0 +1,8 @@
+# 서비스 계정 키는 절대 커밋하지 않는다 (GitHub Secrets에만 보관)
+*.json
+!.vscode/*.json
+service-account*.json
+.env
+__pycache__/
+*.log
+*.csv

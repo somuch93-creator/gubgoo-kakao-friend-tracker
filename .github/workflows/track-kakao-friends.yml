@@ -1,0 +1,37 @@
+name: 카카오 채널 친구 수 기록
+
+on:
+  schedule:
+    # 01:00 UTC = 10:00 KST (한국은 서머타임이 없어 연중 고정)
+    # GitHub 부하에 따라 수 분~수십 분 늦게 실행될 수 있습니다.
+    - cron: "0 1 * * *"
+  workflow_dispatch:        # Actions 탭에서 수동 실행 가능
+
+# 동시 실행 방지 (수동 실행과 스케줄이 겹칠 때)
+concurrency:
+  group: kakao-friends
+  cancel-in-progress: false
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 의존성 설치
+        run: pip install -r requirements.txt
+
+      - name: 친구 수 기록
+        env:
+          KAKAO_CHANNEL_ID: ${{ vars.KAKAO_CHANNEL_ID }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          WORKSHEET_NAME: ${{ vars.WORKSHEET_NAME }}
+        run: python scripts/track_kakao_friends.py
