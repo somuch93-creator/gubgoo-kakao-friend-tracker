@@ -12,10 +12,19 @@ concurrency:
   group: kakao-friends
   cancel-in-progress: false
 
+env:
+  # 마지막 커밋이 이 일수보다 오래됐을 때만 keepalive 커밋을 남긴다.
+  # 60일보다 넉넉히 낮게 잡아, 그 사이 실행이 몇 번 밀리거나 건너뛰어도 여유가 있게 한다.
+  KEEPALIVE_AFTER_DAYS: "0"   # TEST
+
 jobs:
   track:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+
+    # keepalive 커밋을 push 하려면 필요. 저장소 기본값이 read 라 여기서 명시한다.
+    permissions:
+      contents: write
 
     steps:
       - uses: actions/checkout@v4
@@ -35,3 +44,27 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           WORKSHEET_NAME: ${{ vars.WORKSHEET_NAME }}
         run: python scripts/track_kakao_friends.py
+
+      # 공개 저장소는 60일간 '저장소 활동'이 없으면 GitHub이 예약 실행을 자동으로 끈다.
+      # 예약 실행 자체는 활동으로 쳐주지 않으므로, 마지막 커밋이 오래 묵었을 때만
+      # 빈 커밋을 하나 넣어 시계를 되돌린다. 평소(대부분의 실행)에는 아무것도 하지 않는다.
+      #
+      # '매월 1일에 실행' 방식을 쓰지 않은 이유: 그날 예약 실행이 밀리거나 건너뛰어지면
+      # 그 달을 통째로 놓친다. 경과일로 판단하면 어느 실행이 걸리든 스스로 복구된다.
+      - name: 스케줄 자동 중지 방지 (60일 규칙)
+        if: always()
+        run: |
+          set -euo pipefail
+          days=$(( ( $(date +%s) - $(git log -1 --format=%ct) ) / 86400 ))
+          echo "마지막 커밋으로부터 ${days}일 경과 (임계값 ${KEEPALIVE_AFTER_DAYS}일)"
+
+          if [ "$days" -lt "$KEEPALIVE_AFTER_DAYS" ]; then
+            echo "임계값 미만 — 아무것도 하지 않음"
+            exit 0
+          fi
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "chore: keepalive (예약 실행 60일 자동 중지 방지)"
+          git push
+          echo "빈 커밋 push 완료 — 60일 시계 초기화"
