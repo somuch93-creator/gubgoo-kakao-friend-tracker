@@ -15,7 +15,7 @@ concurrency:
 env:
   # 마지막 커밋이 이 일수보다 오래됐을 때만 keepalive 커밋을 남긴다.
   # 60일보다 넉넉히 낮게 잡아, 그 사이 실행이 몇 번 밀리거나 건너뛰어도 여유가 있게 한다.
-  KEEPALIVE_AFTER_DAYS: "0"   # TEST
+  KEEPALIVE_AFTER_DAYS: "45"
 
 jobs:
   track:
