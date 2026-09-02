@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""카카오톡 채널의 친구 수를 매일 Google Sheets에 한 줄씩 기록한다.
+"""카카오톡 채널의 친구 수를 한 시간에 한 줄씩 Google Sheets에 기록한다.
 
 카카오톡 채널 홈(pf.kakao.com)이 공개적으로 사용하는 프로필 API를 그대로 읽는다.
 로그인이나 API 키가 필요 없고, 채널 설정에서 '친구 수 공개'만 켜져 있으면 된다.
@@ -92,18 +92,28 @@ def open_worksheet(sheet_id: str, worksheet_name: str):
     return worksheet
 
 
+def hour_bucket(row: list[str]) -> tuple[str, str]:
+    """행을 '날짜 + 시' 단위로 묶는 키. time 컬럼이 'HH:MM:SS' 라 앞 2자리가 시."""
+    return (row[0], row[1][:2])
+
+
 def build_row(rows: list[list[str]], channel_id: str, channel_name: str,
               count: int, now: datetime) -> tuple[list, int | None]:
-    """기록할 행과, 오늘자 기존 행의 번호(없으면 None)를 반환한다."""
+    """기록할 행과, 같은 시간대 기존 행의 번호(없으면 None)를 반환한다."""
     today = now.strftime("%Y-%m-%d")
+    current = (today, now.strftime("%H"))
 
+    # 비교 대상은 '현재 시간대보다 앞선' 기록 중 가장 최근 것.
+    # 단순히 '마지막 행'을 쓰면, 지난 시간대를 수동 재실행할 때
+    # 뒤쪽(더 나중) 행과 비교해 엉뚱한 증감이 찍힌다.
     same_channel = [r for r in rows if len(r) >= 5 and r[3] == channel_id]
-    previous = next((r for r in reversed(same_channel) if r[0] != today), None)
+    earlier = [r for r in same_channel if hour_bucket(r) < current]
+    previous = max(earlier, key=lambda r: (r[0], r[1]), default=None)
     delta = count - int(previous[4]) if previous else ""
 
     existing_row_number = None
     for index, row in enumerate(rows, start=2):  # 시트 2행부터 데이터
-        if len(row) >= 5 and row[3] == channel_id and row[0] == today:
+        if len(row) >= 5 and row[3] == channel_id and hour_bucket(row) == current:
             existing_row_number = index
             break
 
@@ -140,8 +150,8 @@ def main() -> None:
 
     # RAW 로 쓰는 이유: USER_ENTERED 는 "2026-09-02" 를 날짜로 파싱해 저장하고,
     # 다시 읽을 때 시트 로케일의 표시 형식("2026. 9. 2." 등)으로 돌려준다.
-    # 그러면 아래 build_row 의 '오늘 기록이 이미 있는가' 비교가 조용히 깨져
-    # 매일 중복 행이 쌓인다. 숫자 컬럼은 RAW 에서도 숫자로 저장되므로 손해가 없다.
+    # 그러면 build_row 의 '같은 시간대 기록이 이미 있는가' 비교가 조용히 깨져
+    # 실행할 때마다 중복 행이 쌓인다. 숫자 컬럼은 RAW 에서도 숫자로 저장되므로 손해가 없다.
     if existing_row_number:
         worksheet.update(
             range_name=f"A{existing_row_number}:F{existing_row_number}",
@@ -154,7 +164,7 @@ def main() -> None:
         action = "새 행 추가"
 
     delta_text = "(첫 기록)" if row[5] == "" else f"{row[5]:+,}"
-    print(f"[INFO] {action} 완료 — 전일 대비 {delta_text}")
+    print(f"[INFO] {action} 완료 — 직전 기록 대비 {delta_text}")
 
 
 if __name__ == "__main__":

@@ -1,11 +1,11 @@
 ﻿<#
 .SYNOPSIS
-    카카오톡 채널의 친구 수를 CSV에 하루 한 줄씩 기록합니다.
+    카카오톡 채널의 친구 수를 CSV에 한 시간에 한 줄씩 기록합니다.
 
 .DESCRIPTION
     카카오톡 채널 홈(pf.kakao.com)이 공개적으로 사용하는 프로필 API에서
     friend_count 를 읽어 CSV에 append 합니다. 로그인/토큰이 필요 없습니다.
-    같은 날짜 기록이 이미 있으면 최신 값으로 덮어씁니다(중복 방지).
+    같은 시간대 기록이 이미 있으면 최신 값으로 덮어씁니다(중복 방지).
 
 .EXAMPLE
     .\track-kakao-friends.ps1 -ChannelId _abcdEF
@@ -59,12 +59,25 @@ try {
     $rows = @()
     if (Test-Path $CsvPath) { $rows = @(Import-Csv -Path $CsvPath) }
 
-    # 같은 채널의 '다른 날짜' 마지막 기록과 비교해 증감 계산
-    $prev = $rows | Where-Object { $_.channel_id -eq $ChannelId -and $_.date -ne $today } | Select-Object -Last 1
+    # '날짜 + 시' 단위로 한 줄. 같은 시간대에 다시 돌리면 그 줄을 갱신한다.
+    $bucket = "$today " + $now.ToString('HH')
+    $keyOf = {
+        param($r)
+        $t = if ($r.time -and $r.time.Length -ge 2) { $r.time.Substring(0, 2) } else { '??' }
+        "$($r.date) $t"
+    }
+
+    # 비교 대상은 '현재 시간대보다 앞선' 기록 중 가장 최근 것
+    $earlier = @($rows | Where-Object {
+        $_.channel_id -eq $ChannelId -and (& $keyOf $_) -lt $bucket
+    })
+    $prev = $earlier | Sort-Object { "$($_.date) $($_.time)" } | Select-Object -Last 1
     $delta = if ($prev) { $count - [int]$prev.friend_count } else { $null }
 
-    # 오늘자 중복 행 제거 후 재기록
-    $rows = @($rows | Where-Object { -not ($_.channel_id -eq $ChannelId -and $_.date -eq $today) })
+    # 같은 시간대 중복 행 제거 후 재기록
+    $rows = @($rows | Where-Object {
+        -not ($_.channel_id -eq $ChannelId -and (& $keyOf $_) -eq $bucket)
+    })
     $rows += [pscustomobject][ordered]@{
         date         = $today
         time         = $now.ToString('HH:mm:ss')
@@ -77,7 +90,7 @@ try {
     $rows | Export-Csv -Path $CsvPath -NoTypeInformation -Encoding UTF8
 
     $deltaText = if ($null -eq $delta) { '(첫 기록)' } elseif ($delta -ge 0) { "+$delta" } else { "$delta" }
-    Write-Log ("기록 완료: {0} / 친구 {1:N0}명 / 전일 대비 {2} -> {3}" -f $name, $count, $deltaText, $CsvPath)
+    Write-Log ("기록 완료: {0} / 친구 {1:N0}명 / 직전 기록 대비 {2} -> {3}" -f $name, $count, $deltaText, $CsvPath)
     exit 0
 }
 catch {
