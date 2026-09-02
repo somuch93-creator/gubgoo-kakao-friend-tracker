@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""카카오톡 채널의 친구 수를 한 시간에 한 줄씩 Google Sheets에 기록한다.
+"""카카오톡 채널의 친구 수를 일정 주기마다 한 줄씩 Google Sheets에 기록한다.
 
 카카오톡 채널 홈(pf.kakao.com)이 공개적으로 사용하는 프로필 API를 그대로 읽는다.
 로그인이나 API 키가 필요 없고, 채널 설정에서 '친구 수 공개'만 켜져 있으면 된다.
@@ -20,6 +20,12 @@ import requests
 KST = ZoneInfo("Asia/Seoul")
 PROFILE_API = "https://pf.kakao.com/rocket-web/web/v2/profiles/{channel_id}"
 HEADER = ["date", "time", "channel", "channel_id", "friend_count", "delta"]
+
+# 실행 주기(분)와 중복 판정 구간(분). Apps Script 버전(apps-script/Code.gs)과 값을 맞춰 둔다.
+# 구간을 주기의 절반으로 잡는 이유: 같으면 실행이 몇 초만 흔들려도 두 실행이 같은
+# 구간에 들어가 측정값 하나가 덮여 사라진다. 절반이면 정상 실행끼리는 겹치지 않는다.
+TRIGGER_MINUTES = 10
+SLOT_MINUTES = TRIGGER_MINUTES // 2
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 
@@ -92,28 +98,39 @@ def open_worksheet(sheet_id: str, worksheet_name: str):
     return worksheet
 
 
-def hour_bucket(row: list[str]) -> tuple[str, str]:
-    """행을 '날짜 + 시' 단위로 묶는 키. time 컬럼이 'HH:MM:SS' 라 앞 2자리가 시."""
-    return (row[0], row[1][:2])
+def slot_key(date_str: str, time_str: str) -> str:
+    """'YYYY-MM-DD' + 'HH:MM:SS' 를 SLOT_MINUTES 단위 구간 키로. 예) 5분 단위면 14:23 -> '... 14:20'"""
+    if not time_str or len(time_str) < 5:
+        return f"{date_str} ??"
+    try:
+        minute = int(time_str[3:5])
+    except ValueError:
+        return f"{date_str} ??"
+    slot = minute // SLOT_MINUTES * SLOT_MINUTES
+    return f"{date_str} {time_str[:2]}:{slot:02d}"
+
+
+def row_key(row: list[str]) -> str:
+    return slot_key(row[0], row[1])
 
 
 def build_row(rows: list[list[str]], channel_id: str, channel_name: str,
               count: int, now: datetime) -> tuple[list, int | None]:
-    """기록할 행과, 같은 시간대 기존 행의 번호(없으면 None)를 반환한다."""
+    """기록할 행과, 같은 구간 기존 행의 번호(없으면 None)를 반환한다."""
     today = now.strftime("%Y-%m-%d")
-    current = (today, now.strftime("%H"))
+    current = slot_key(today, now.strftime("%H:%M:%S"))
 
-    # 비교 대상은 '현재 시간대보다 앞선' 기록 중 가장 최근 것.
-    # 단순히 '마지막 행'을 쓰면, 지난 시간대를 수동 재실행할 때
+    # 비교 대상은 '현재 구간보다 앞선' 기록 중 가장 최근 것.
+    # 단순히 '마지막 행'을 쓰면, 지난 구간을 수동 재실행할 때
     # 뒤쪽(더 나중) 행과 비교해 엉뚱한 증감이 찍힌다.
     same_channel = [r for r in rows if len(r) >= 5 and r[3] == channel_id]
-    earlier = [r for r in same_channel if hour_bucket(r) < current]
+    earlier = [r for r in same_channel if row_key(r) < current]
     previous = max(earlier, key=lambda r: (r[0], r[1]), default=None)
     delta = count - int(previous[4]) if previous else ""
 
     existing_row_number = None
     for index, row in enumerate(rows, start=2):  # 시트 2행부터 데이터
-        if len(row) >= 5 and row[3] == channel_id and hour_bucket(row) == current:
+        if len(row) >= 5 and row[3] == channel_id and row_key(row) == current:
             existing_row_number = index
             break
 
@@ -150,7 +167,7 @@ def main() -> None:
 
     # RAW 로 쓰는 이유: USER_ENTERED 는 "2026-09-02" 를 날짜로 파싱해 저장하고,
     # 다시 읽을 때 시트 로케일의 표시 형식("2026. 9. 2." 등)으로 돌려준다.
-    # 그러면 build_row 의 '같은 시간대 기록이 이미 있는가' 비교가 조용히 깨져
+    # 그러면 build_row 의 '같은 구간 기록이 이미 있는가' 비교가 조용히 깨져
     # 실행할 때마다 중복 행이 쌓인다. 숫자 컬럼은 RAW 에서도 숫자로 저장되므로 손해가 없다.
     if existing_row_number:
         worksheet.update(
