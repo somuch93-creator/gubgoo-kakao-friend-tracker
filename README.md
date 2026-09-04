@@ -130,4 +130,6 @@ pip install -r requirements.txt
 KAKAO_CHANNEL_ID=_WUtxjM python scripts/track_kakao_friends.py --dry-run
 ```
 
-`scripts/track-kakao-friends.ps1` 은 같은 일을 하는 PowerShell 버전입니다(시간 단위 기준도 동일). 의존성 없이 로컬 CSV에 기록하며, GitHub 없이 로컬에서 굴려야 할 때를 대비해 남겨뒀습니다.
+> ⚠️ `scripts/track-kakao-friends.ps1` (로컬 CSV용 PowerShell 버전)은 **더 이상 최신이 아닙니다.**
+> 아직 '시간 단위' 중복 판정을 쓰고 있고, 위의 시각 정규화 수정도 반영돼 있지 않습니다.
+> 지금 쓰지 않는 예비 파일이라 그대로 두었습니다. 다시 쓰실 일이 생기면 먼저 갱신해야 합니다.
