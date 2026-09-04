@@ -98,16 +98,34 @@ def open_worksheet(sheet_id: str, worksheet_name: str):
     return worksheet
 
 
+def norm_time(value: object) -> str:
+    """시트에서 읽은 시각을 'HH:MM:SS' 로 정규화한다.
+
+    시트가 "09:31:45" 를 시각 타입으로 저장했다가 텍스트 서식이 적용되면
+    표시 문자열 "9:31:45" 로 돌아온다(앞자리 0이 떨어짐). 고정 위치로 자르면
+    시=" 9:" 분="1:" 처럼 깨진 키가 나오고, 그 키가 문자 비교에서 정상 키보다
+    크게 정렬돼 해당 행들이 통째로 '미래'로 분류된다. 그러면 증감 비교 대상이
+    엉뚱한 행이 되어 delta 가 누적된다. ':' 로 나눠 다시 채워 이를 막는다.
+    """
+    parts = str(value or "").strip().split(":")
+    if len(parts) < 2:
+        return ""
+
+    def pad(chunk: str) -> str:
+        digits = "".join(c for c in str(chunk) if c.isdigit())
+        return digits[-2:].rjust(2, "0") if digits else "00"
+
+    return f"{pad(parts[0])}:{pad(parts[1])}:{pad(parts[2]) if len(parts) > 2 else '00'}"
+
+
 def slot_key(date_str: str, time_str: str) -> str:
     """'YYYY-MM-DD' + 'HH:MM:SS' 를 SLOT_MINUTES 단위 구간 키로. 예) 5분 단위면 14:23 -> '... 14:20'"""
-    if not time_str or len(time_str) < 5:
+    normalized = norm_time(time_str)
+    date_str = str(date_str or "").strip()
+    if not normalized:
         return f"{date_str} ??"
-    try:
-        minute = int(time_str[3:5])
-    except ValueError:
-        return f"{date_str} ??"
-    slot = minute // SLOT_MINUTES * SLOT_MINUTES
-    return f"{date_str} {time_str[:2]}:{slot:02d}"
+    slot = int(normalized[3:5]) // SLOT_MINUTES * SLOT_MINUTES
+    return f"{date_str} {normalized[:2]}:{slot:02d}"
 
 
 def row_key(row: list[str]) -> str:
@@ -123,9 +141,11 @@ def build_row(rows: list[list[str]], channel_id: str, channel_name: str,
     # 비교 대상은 '현재 구간보다 앞선' 기록 중 가장 최근 것.
     # 단순히 '마지막 행'을 쓰면, 지난 구간을 수동 재실행할 때
     # 뒤쪽(더 나중) 행과 비교해 엉뚱한 증감이 찍힌다.
+    # 정렬 비교도 정규화한 값으로 해야 한다. 원본 문자열끼리 비교하면
+    # "9:51:46" > "10:01:46" (문자 비교)이 되어 더 오래된 행이 '가장 최근'으로 뽑힌다.
     same_channel = [r for r in rows if len(r) >= 5 and r[3] == channel_id]
     earlier = [r for r in same_channel if row_key(r) < current]
-    previous = max(earlier, key=lambda r: (r[0], r[1]), default=None)
+    previous = max(earlier, key=lambda r: (str(r[0]).strip(), norm_time(r[1])), default=None)
     delta = count - int(previous[4]) if previous else ""
 
     existing_row_number = None

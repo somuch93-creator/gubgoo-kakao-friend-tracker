@@ -36,29 +36,69 @@ function recordFriendCount() {
   const today = Utilities.formatDate(now, TZ, 'yyyy-MM-dd');
   const time = Utilities.formatDate(now, TZ, 'HH:mm:ss');
 
-  // 헤더를 뺀 데이터 행만
+  // 헤더를 뺀 데이터 행만.
+  // date/time 은 시트가 날짜·시각 타입으로 돌려줄 수 있어 String() 으로 뭉개기 전에
+  // 정규화한다. 그냥 String(Date) 하면 "Thu Sep 04 2026 ..." 이 되어 비교가 깨진다.
   const values = sheet.getDataRange().getValues();
-  const rows = values.slice(1).map(function (r) { return r.map(String); });
+  const rows = values.slice(1).map(function (r) {
+    return [normDate_(r[0]), normTime_(r[1]),
+            String(r[2] == null ? '' : r[2]), String(r[3] == null ? '' : r[3]),
+            String(r[4] == null ? '' : r[4]), String(r[5] == null ? '' : r[5])];
+  });
 
   const result = buildRow_(rows, CHANNEL_ID, profile.name, profile.count, today, time);
 
+  // appendRow 대신 setValues 를 쓴다. appendRow 는 값을 파싱해 "09:31:45" 를
+  // 시각 타입으로 바꿔 버리는데, 텍스트 서식이 걸린 범위에 setValues 하면
+  // 문자열이 그대로 남는다.
+  const targetRow = result.existingRowNumber || (sheet.getLastRow() + 1);
+  sheet.getRange(targetRow, 1, 1, HEADER.length).setValues([result.row]);
+
   if (result.existingRowNumber) {
-    sheet.getRange(result.existingRowNumber, 1, 1, HEADER.length).setValues([result.row]);
-    Logger.log('%s행 갱신 — %s 친구 %s명', String(result.existingRowNumber), profile.name, String(profile.count));
+    Logger.log('%s행 갱신 — %s 친구 %s명', String(targetRow), profile.name, String(profile.count));
   } else {
-    sheet.appendRow(result.row);
-    Logger.log('새 행 추가 — %s 친구 %s명 (직전 대비 %s)', profile.name, String(profile.count), String(result.row[5]));
+    Logger.log('%s행 추가 — %s 친구 %s명 (직전 대비 %s)', String(targetRow), profile.name, String(profile.count), String(result.row[5]));
   }
 }
 
 
-/** 'YYYY-MM-DD HH:MM' 을 SLOT_MINUTES 단위 구간 키로 바꾼다. 예) 5분 단위면 14:23 -> "... 14:20" */
+function pad2_(v) {
+  return ('0' + String(v).replace(/[^0-9]/g, '')).slice(-2);
+}
+
+
+/** 시트에서 읽은 날짜 값을 'YYYY-MM-DD' 로 정규화한다. 시각 타입으로 저장돼 있으면 Date 로 돌아온다. */
+function normDate_(v) {
+  if (v instanceof Date) return Utilities.formatDate(v, TZ, 'yyyy-MM-dd');
+  return String(v == null ? '' : v).trim();
+}
+
+
+/**
+ * 시트에서 읽은 시각 값을 'HH:mm:ss' 로 정규화한다.
+ *
+ * 왜 필요한가: 시트가 "09:31:45" 를 시각 타입으로 저장했다가 텍스트 서식이
+ * 적용되면서 표시 문자열 "9:31:45" 로 되돌아오는 일이 있다. 앞자리 0이 떨어진다.
+ * 예전처럼 고정 위치로 잘라 쓰면 "9:31:45" 에서 시=" 9:" 분="1:" 처럼 깨진 키가
+ * 나오고, 그 키가 문자 비교에서 정상 키보다 크게 정렬돼 해당 행들이 통째로
+ * '미래'로 분류된다. 그러면 증감 비교 대상이 엉뚱한 행이 되어 delta 가 누적된다.
+ * (2026-09-03 ~ 09-04 의 00~09 시 기록이 실제로 이 문제로 틀어졌다.)
+ */
+function normTime_(v) {
+  if (v instanceof Date) return Utilities.formatDate(v, TZ, 'HH:mm:ss');
+  const parts = String(v == null ? '' : v).trim().split(':');
+  if (parts.length < 2) return '';
+  return pad2_(parts[0]) + ':' + pad2_(parts[1]) + ':' + (parts.length > 2 ? pad2_(parts[2]) : '00');
+}
+
+
+/** 'YYYY-MM-DD' + 'HH:MM:SS' 를 SLOT_MINUTES 단위 구간 키로. 예) 5분 단위면 14:23 -> "... 14:20" */
 function slotKey_(dateStr, timeStr) {
-  if (!timeStr || timeStr.length < 5) return dateStr + ' ??';
-  const mm = parseInt(timeStr.substring(3, 5), 10);
-  if (isNaN(mm)) return dateStr + ' ??';
-  const slot = Math.floor(mm / SLOT_MINUTES) * SLOT_MINUTES;
-  return dateStr + ' ' + timeStr.substring(0, 2) + ':' + (slot < 10 ? '0' + slot : String(slot));
+  const t = normTime_(timeStr);
+  const d = normDate_(dateStr);
+  if (!t) return d + ' ??';
+  const slot = Math.floor(parseInt(t.substring(3, 5), 10) / SLOT_MINUTES) * SLOT_MINUTES;
+  return d + ' ' + t.substring(0, 2) + ':' + pad2_(slot);
 }
 
 
@@ -80,10 +120,14 @@ function buildRow_(rows, channelId, channelName, count, today, time) {
 
   const mine = rows.filter(function (r) { return r.length >= 5 && r[3] === channelId; });
 
+  // 정렬 비교도 정규화한 값으로 해야 한다. 원본 문자열끼리 비교하면
+  // "9:51:46" > "10:01:46" (문자 비교)이 되어 더 오래된 행이 '가장 최근'으로 뽑힌다.
+  function sortKey(r) { return normDate_(r[0]) + ' ' + normTime_(r[1]); }
+
   let previous = null;
   mine.forEach(function (r) {
     if (keyOf(r) >= currentKey) return;
-    if (!previous || (r[0] + ' ' + r[1]) > (previous[0] + ' ' + previous[1])) previous = r;
+    if (!previous || sortKey(r) > sortKey(previous)) previous = r;
   });
   const delta = previous ? count - Number(previous[4]) : '';
 
